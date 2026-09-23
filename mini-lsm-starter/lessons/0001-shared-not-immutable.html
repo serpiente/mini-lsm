@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lesson 01 · &amp;self is shared, not immutable</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+</head>
+<body>
+<main class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Lesson 01 · Mini-LSM Week 1 Day 1 · Memtable</p>
+  <h1><code>&amp;self</code> is shared, not immutable</h1>
+  <p class="standfirst">Why <code>SkipMap</code> mutates through a shared reference and
+  <code>BTreeMap</code> refuses to — and why the answer is decided by memory layout, not by taste.</p>
+</header>
+
+<h2><span class="num">01</span>The signature that looks like a typo</h2>
+
+<p>Open <code>src/mem_table.rs</code> in your starter. The method you have to implement today is
+this:</p>
+
+<pre><code><span class="c">/// Put a key-value pair into the mem-table.</span>
+pub fn put(<span class="hl">&amp;self</span>, _key: &amp;[u8], _value: &amp;[u8]) -&gt; Result&lt;()&gt; {
+    unimplemented!()
+}</code></pre>
+<span class="src">mini-lsm-starter/src/mem_table.rs — the <code>MemTable</code> you are implementing</span>
+
+<p>A method that <em>inserts data</em> and takes <code>&amp;self</code>. If your model of Rust is
+"<code>&amp;</code> means read-only", this signature is impossible, and the rest of Week 1 will
+feel like it is getting away with something. It isn't. Fixing one word in your mental model makes
+the whole write path obvious.</p>
+
+<div class="callout myth">
+  <span class="label">The word to drop</span>
+  <p><strong>"Immutable reference" is a misleading name for <code>&amp;T</code>.</strong> It is
+  everywhere — including in the Mini-LSM book — so you are in good company using it. But it
+  describes a consequence that only <em>usually</em> holds, not the guarantee.</p>
+</div>
+
+<h2><span class="num">02</span>The reframe</h2>
+
+<p>Rust has two reference types, and the axis that separates them is <strong>how many may exist at
+once</strong>:</p>
+
+<div class="compare">
+  <div>
+    <h4>&amp;T — <em>shared</em></h4>
+    <p>Many may exist simultaneously. Aliasing is allowed.</p>
+    <p>Says nothing about whether the referent changes.</p>
+  </div>
+  <div>
+    <h4>&amp;mut T — <em>exclusive</em></h4>
+    <p>Exactly one may exist. Nothing else may alias it.</p>
+    <p>Its real power is the exclusion, not the mutation.</p>
+  </div>
+</div>
+
+<p>The invariant the compiler actually enforces is not "shared things never change." It is
+<em class="term">no aliasing and mutation at the same time</em>. The Rustonomicon puts the
+guarantee plainly: <q>&amp;mut isn't allowed to be aliased</q> — and that is what lets the
+compiler cache reads in registers and reorder writes.</p>
+<span class="src">→ <a href="https://doc.rust-lang.org/nomicon/aliasing.html">Rustonomicon: Aliasing</a></span>
+
+<p>So there are exactly two ways to legally mutate something in Rust:</p>
+
+<ul class="plain">
+  <li><strong>Prove you are alone.</strong> Hold a <code>&amp;mut T</code>. The borrow checker
+  verifies exclusivity at compile time.</li>
+  <li><strong>Make the mutation safe to alias.</strong> Route it through
+  <code>UnsafeCell</code>, the one primitive permitted to change behind a <code>&amp;T</code>.
+  This is called <em class="term">interior mutability</em>. Every atomic type,
+  <code>Mutex</code>, and <code>RefCell</code> is built on it.</li>
+</ul>
+<span class="src">→ <a href="https://doc.rust-lang.org/std/cell/struct.UnsafeCell.html">std::cell::UnsafeCell</a>
+ · <a href="https://doc.rust-lang.org/book/ch15-05-interior-mutability.html">Rust Book 15.5</a></span>
+
+<p>Neither map gets to choose freely. Each one's <em>memory layout</em> decides which door is open
+to it. That is your actual question — so let's look at the two layouts.</p>
+
+<h2><span class="num">03</span><code>BTreeMap</code>: elements live in arrays, and arrays move</h2>
+
+<p>Rust's <code>BTreeMap</code> is a B-tree with a small, fixed branching factor. From the standard
+library's own source:</p>
+
+<pre><code><span class="k">const</span> B: usize = 6;
+<span class="k">pub</span>(super) <span class="k">const</span> CAPACITY: usize = 2 * B - 1;          <span class="c">// = 11</span>
+<span class="k">pub</span>(super) <span class="k">const</span> MIN_LEN_AFTER_SPLIT: usize = B - 1;   <span class="c">// = 5</span>
+
+<span class="k">struct</span> LeafNode&lt;K, V&gt; {
+    parent: Option&lt;NonNull&lt;InternalNode&lt;K, V&gt;&gt;&gt;,
+    parent_idx: MaybeUninit&lt;u16&gt;,
+    len: u16,
+    <span class="hl">keys: [MaybeUninit&lt;K&gt;; CAPACITY],</span>   <span class="c">// 11 keys, inline</span>
+    <span class="hl">vals: [MaybeUninit&lt;V&gt;; CAPACITY],</span>   <span class="c">// 11 values, inline</span>
+}</code></pre>
+<span class="src">library/alloc/src/collections/btree/node.rs, lines 43–66 —
+run <code>rustc --print sysroot</code> to find your copy</span>
+
+<p>Read those two highlighted lines carefully, because they decide everything. The keys and values
+are <strong>stored inline, in fixed arrays, eleven to a node</strong>. They are not boxed, not
+behind pointers — they are bytes sitting in the middle of the node allocation.</p>
+
+<figure>
+<svg viewBox="0 0 600 232" role="img" aria-label="A full eleven-key B-tree node splitting into two nodes, with six keys copied into a newly allocated node">
+  <g font-family="ui-monospace, Menlo, monospace" font-size="12">
+    <text x="0" y="16" fill="var(--ink-faint)" font-size="10">BEFORE — one node, full</text>
+    <rect x="60" y="24" width="473" height="30" fill="var(--paper-sunk)" stroke="var(--ink-soft)"/>
+    <g stroke="var(--rule)">
+      <line x1="103" y1="24" x2="103" y2="54"/><line x1="146" y1="24" x2="146" y2="54"/>
+      <line x1="189" y1="24" x2="189" y2="54"/><line x1="232" y1="24" x2="232" y2="54"/>
+      <line x1="275" y1="24" x2="275" y2="54"/><line x1="318" y1="24" x2="318" y2="54"/>
+      <line x1="361" y1="24" x2="361" y2="54"/><line x1="404" y1="24" x2="404" y2="54"/>
+      <line x1="447" y1="24" x2="447" y2="54"/><line x1="490" y1="24" x2="490" y2="54"/>
+    </g>
+    <g fill="var(--ink)" text-anchor="middle">
+      <text x="81" y="44">b</text><text x="124" y="44">d</text><text x="167" y="44">f</text>
+      <text x="210" y="44">h</text><text x="253" y="44">j</text><text x="296" y="44">l</text>
+      <text x="339" y="44">n</text><text x="382" y="44">p</text><text x="425" y="44">r</text>
+      <text x="468" y="44">t</text><text x="511" y="44">v</text>
+    </g>
+
+    <line x1="296" y1="62" x2="296" y2="84" stroke="var(--ink-soft)" stroke-width="1.5"
+          marker-end="url(#ar1)"/>
+    <text x="306" y="78" fill="var(--accent)" font-size="11">insert("c") — no room</text>
+
+    <text x="0" y="106" fill="var(--ink-faint)" font-size="10">AFTER — split</text>
+    <rect x="266" y="92" width="60" height="28" fill="var(--paper-sunk)" stroke="var(--ink-soft)"/>
+    <text x="296" y="111" fill="var(--ink)" text-anchor="middle">j</text>
+
+    <path d="M 276 120 L 160 158" stroke="var(--ink-soft)" fill="none"/>
+    <path d="M 316 120 L 420 158" stroke="var(--ink-soft)" fill="none"/>
+
+    <rect x="60" y="158" width="200" height="28" fill="var(--paper-sunk)" stroke="var(--ink-soft)"/>
+    <g stroke="var(--rule)">
+      <line x1="100" y1="158" x2="100" y2="186"/><line x1="140" y1="158" x2="140" y2="186"/>
+      <line x1="180" y1="158" x2="180" y2="186"/><line x1="220" y1="158" x2="220" y2="186"/>
+    </g>
+    <g fill="var(--ink)" text-anchor="middle">
+      <text x="80" y="177">b</text><text x="120" y="177">c</text><text x="160" y="177">d</text>
+      <text x="200" y="177">f</text><text x="240" y="177">h</text>
+    </g>
+    <text x="60" y="200" fill="var(--ink-faint)" font-size="10">same allocation</text>
+
+    <rect x="300" y="158" width="240" height="28" fill="var(--accent-soft)" stroke="var(--accent)"/>
+    <g stroke="var(--accent)" opacity="0.45">
+      <line x1="340" y1="158" x2="340" y2="186"/><line x1="380" y1="158" x2="380" y2="186"/>
+      <line x1="420" y1="158" x2="420" y2="186"/><line x1="460" y1="158" x2="460" y2="186"/>
+      <line x1="500" y1="158" x2="500" y2="186"/>
+    </g>
+    <g fill="var(--ink)" text-anchor="middle">
+      <text x="320" y="177">l</text><text x="360" y="177">n</text><text x="400" y="177">p</text>
+      <text x="440" y="177">r</text><text x="480" y="177">t</text><text x="520" y="177">v</text>
+    </g>
+    <text x="300" y="200" fill="var(--accent)" font-size="10">NEW allocation — these six moved</text>
+
+    <text x="0" y="224" fill="var(--ink-soft)" font-size="10.5">Any &amp;V pointing at "n" before the split is now a dangling pointer.</text>
+  </g>
+  <defs>
+    <marker id="ar1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--ink-soft)"/>
+    </marker>
+  </defs>
+</svg>
+<figcaption><b>A split physically relocates elements.</b> Inserting one key into a full node moves
+six values into a brand-new allocation. Exclusivity is therefore <em>load-bearing for memory
+safety</em>: if <code>insert</code> took <code>&amp;self</code>, a reference you were holding could
+be left pointing at freed memory. <code>&amp;mut self</code> is what proves nobody is holding one.</figcaption>
+</figure>
+
+<p>Hence the signature, and it could not be otherwise:</p>
+
+<pre><code>pub fn insert(<span class="hl">&amp;mut self</span>, key: K, value: V) -&gt; Option&lt;V&gt;</code></pre>
+<span class="src">library/alloc/src/collections/btree/map.rs, line 1045</span>
+
+<h2><span class="num">04</span><code>SkipMap</code>: elements never move, so pointers can be swapped</h2>
+
+<p>Now the other layout. A <code>crossbeam_skiplist</code> node is <strong>one heap allocation per
+entry</strong>, carrying a variable-height "tower" of <em>atomic</em> forward pointers:</p>
+
+<pre><code><span class="k">const</span> HEIGHT_BITS: usize = 5;
+<span class="k">const</span> MAX_HEIGHT: usize = 1 &lt;&lt; HEIGHT_BITS;   <span class="c">// = 32 levels</span>
+
+#[repr(C)]
+<span class="k">struct</span> Node&lt;K, V&gt; {
+    value: V,
+    key: K,
+    <span class="c">/// Reference count AND tower height, packed into one word.</span>
+    refs_and_height: AtomicUsize,
+    <span class="hl">tower: Tower&lt;K, V&gt;,</span>   <span class="c">// [Atomic&lt;Node&lt;K, V&gt;&gt;] — dynamically sized, must be last</span>
+}</code></pre>
+<span class="src">crossbeam-skiplist-0.1.3/src/base.rs, lines 16–90 —
+<code>ls ~/.cargo/registry/src/*/crossbeam-skiplist-0.1.3/src/</code></span>
+
+<p>Each node's height is drawn at random when it is created — a xorshift PRNG, then
+<code>trailing_zeros() + 1</code>, which gives each extra level a probability of ½. Tall nodes are
+rare and act as express lanes; a search starts at the highest occupied level and descends. That
+randomness is what replaces a B-tree's careful rebalancing: <strong>nothing is ever rebalanced,
+because nothing needs to be</strong>.</p>
+<span class="src">base.rs, <code>random_height</code> at line 558 · <code>search_bound</code> at line 681</span>
+
+<figure>
+<svg viewBox="0 0 600 236" role="img" aria-label="A skiplist insert linking a new node by one atomic compare-exchange, with no existing node moving">
+  <g font-family="ui-monospace, Menlo, monospace" font-size="12">
+    <text x="0" y="14" fill="var(--ink-faint)" font-size="10">INSERT "c" — nothing relocates</text>
+
+    <g fill="var(--paper-sunk)" stroke="var(--ink-soft)">
+      <rect x="30" y="40" width="56" height="26"/><rect x="30" y="70" width="56" height="26"/><rect x="30" y="100" width="56" height="26"/>
+      <rect x="150" y="100" width="56" height="26"/>
+      <rect x="390" y="40" width="56" height="26"/><rect x="390" y="70" width="56" height="26"/><rect x="390" y="100" width="56" height="26"/>
+      <rect x="510" y="70" width="56" height="26"/><rect x="510" y="100" width="56" height="26"/>
+    </g>
+    <g fill="var(--accent-soft)" stroke="var(--accent)">
+      <rect x="270" y="70" width="56" height="26"/><rect x="270" y="100" width="56" height="26"/>
+    </g>
+
+    <g fill="var(--ink)" text-anchor="middle" font-size="11">
+      <text x="58" y="117">head</text><text x="178" y="117">a</text>
+      <text x="418" y="117">f</text><text x="538" y="117">k</text>
+      <text x="298" y="117" fill="var(--accent)" font-weight="600">c</text>
+    </g>
+    <text x="298" y="60" fill="var(--accent)" text-anchor="middle" font-size="10">new</text>
+
+    <g fill="var(--ink-faint)" font-size="9" text-anchor="end">
+      <text x="24" y="57">L2</text><text x="24" y="87">L1</text><text x="24" y="117">L0</text>
+    </g>
+
+    <line x1="86" y1="53" x2="386" y2="53" stroke="var(--ink-soft)" marker-end="url(#ar2)"/>
+
+    <line x1="86" y1="83" x2="266" y2="83" stroke="var(--accent)" stroke-dasharray="4 3" marker-end="url(#ar3)"/>
+    <line x1="326" y1="83" x2="386" y2="83" stroke="var(--accent)" stroke-dasharray="4 3" marker-end="url(#ar3)"/>
+    <line x1="446" y1="83" x2="506" y2="83" stroke="var(--ink-soft)" marker-end="url(#ar2)"/>
+
+    <line x1="86" y1="113" x2="146" y2="113" stroke="var(--ink-soft)" marker-end="url(#ar2)"/>
+    <line x1="206" y1="113" x2="266" y2="113" stroke="var(--accent)" stroke-width="2" marker-end="url(#ar3)"/>
+    <line x1="326" y1="113" x2="386" y2="113" stroke="var(--ink-soft)" marker-end="url(#ar2)"/>
+    <line x1="446" y1="113" x2="506" y2="113" stroke="var(--ink-soft)" marker-end="url(#ar2)"/>
+
+    <text x="150" y="150" fill="var(--accent)" font-size="10">▲ one compare_exchange on a's L0 pointer: f → c</text>
+    <text x="150" y="166" fill="var(--accent)" font-size="10">   dashed levels are built afterwards, one CAS each</text>
+
+    <g fill="var(--ink-soft)" font-size="10.5">
+      <text x="0" y="196">head, a, f and k were not touched. Not one byte of existing data moved,</text>
+      <text x="0" y="212">so no outstanding reference into the map was invalidated. The whole</text>
+      <text x="0" y="228">structural change is a single atomic pointer swap.</text>
+    </g>
+  </g>
+  <defs>
+    <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--ink-soft)"/>
+    </marker>
+    <marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)"/>
+    </marker>
+  </defs>
+</svg>
+<figcaption><b>An insert links, it does not relocate.</b> The node is allocated, its level-0
+pointer is set to the successor, and then one <code>compare_exchange</code> on the predecessor
+publishes it. Levels above are added afterwards — which is why a node can be briefly visible at
+level 0 and not yet at level 2.</figcaption>
+</figure>
+
+<p>Here is that exact moment in the real source, stripped to its spine:</p>
+
+<pre><code><span class="c">// Set the lowest successor of `n` to `search.right[0]`.</span>
+n.tower[0].store(search.right[0], Ordering::Relaxed);
+
+<span class="c">// Try installing the new node into the skip list (at level 0).</span>
+<span class="k">if</span> search.left[0][0]
+    .<span class="hl">compare_exchange</span>(search.right[0], node, SeqCst, SeqCst, guard)
+    .is_ok()
+{
+    <span class="k">break</span>;    <span class="c">// published. the key is now visible to every thread.</span>
+}
+<span class="c">// Lost the race against another writer — re-search and try again.</span></code></pre>
+<span class="src">crossbeam-skiplist-0.1.3/src/base.rs, ~lines 925–940</span>
+
+<p>Every mutation goes through <code>Atomic&lt;Node&lt;K, V&gt;&gt;</code>, which is built on
+<code>UnsafeCell</code>. Door number two. So the signature can be — and is:</p>
+
+<pre><code>pub fn insert(<span class="hl">&amp;self</span>, key: K, value: V) -&gt; Entry&lt;'_, K, V&gt;</code></pre>
+<span class="src">crossbeam-skiplist-0.1.3/src/map.rs, line 372</span>
+
+<div class="callout key">
+  <span class="label">The whole lesson in two sentences</span>
+  <p><code>BTreeMap</code> keeps elements in inline arrays that <strong>relocate</strong> when a
+  node splits, so the only safe way to mutate it is to prove nobody else is looking —
+  <code>&amp;mut self</code>.</p>
+  <p><code>SkipMap</code> keeps every element in its own allocation, joined by <strong>atomic
+  pointers</strong>, so a complete structural update is one <code>compare_exchange</code> and
+  nothing relocates — which is legal through <code>&amp;self</code>.</p>
+</div>
+
+<h2><span class="num">05</span>What you just bought, in your own code</h2>
+
+<p>This is not trivia; it is the reason today's task is short. Because <code>put</code> takes
+<code>&amp;self</code>, the Mini-LSM book can say:</p>
+
+<blockquote>
+<p>The important difference is that mutating methods such as <code>insert</code> require only an
+immutable reference to the skiplist, rather than a mutable one. […] Your memtable implementation
+therefore <strong>does not need an additional mutex</strong>.</p>
+</blockquote>
+<span class="src">→ <a href="https://skyzh.github.io/mini-lsm/week1-01-memtable.html">Mini-LSM Week 1 Day 1: Memtable</a></span>
+
+<p>Concretely: a writer takes only a <em>read</em> lock on the engine's state to get at the current
+memtable, then inserts. Many writers do this at once. The write lock is reserved for
+<em>structural</em> changes — swapping in a fresh memtable when the current one is full. Had
+<code>SkipMap::insert</code> needed <code>&amp;mut self</code>, every single <code>put</code> would
+have had to serialise behind an exclusive lock, and the memtable would be the engine's bottleneck.</p>
+
+<h2><span class="num">06</span>Practice</h2>
+
+<p>Answer from memory. Scrolling up costs you the benefit.</p>
+<div class="scoreline"></div>
+
+<div class="quiz">
+  <p class="quiz-q">What does holding a <code>&amp;T</code> actually guarantee?</p>
+  <ul class="quiz-opts">
+    <li data-correct="false" data-why="This is the common misreading. A <code>&amp;T</code> to a type with interior mutability — an <code>AtomicUsize</code>, a <code>Mutex</code>, a <code>SkipMap</code> — watches the referent change all the time.">The referent will never be modified by anyone</li>
+    <li data-correct="true"  data-why="Shared is the correct name: <code>&amp;T</code> means aliasing is permitted, so many holders may coexist. It says nothing at all about mutation — which is precisely why <code>SkipMap::insert(&amp;self, …)</code> is allowed to exist.">The referent may be accessed by many holders</li>
+    <li data-correct="false" data-why="Thread confinement is what <code>Send</code> and <code>Sync</code> govern, and it is a property of the type, not of the reference. <code>&amp;SkipMap</code> is deliberately shareable across threads.">The referent lives inside a single owning thread</li>
+    <li data-correct="false" data-why="No copy is implied. Copy-on-write is one strategy a type may adopt, but it is not something <code>&amp;T</code> requires — Mini-LSM's engine state uses it by explicit choice.">The referent must be copied before any change</li>
+  </ul>
+  <div class="quiz-why"></div>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q">Why must <code>BTreeMap::insert</code> take <code>&amp;mut self</code>?</p>
+  <ul class="quiz-opts">
+    <li data-correct="true"  data-why="Exactly. <code>CAPACITY = 11</code> inline slots per node; overflow splits the node and copies roughly half the elements into a new allocation. Exclusivity is what guarantees no outstanding reference is left dangling.">A full node splits, so existing elements physically move.</li>
+    <li data-correct="false" data-why="Ordering has nothing to do with it — <code>SkipMap</code> is just as strictly ordered and still takes <code>&amp;self</code>. The obstacle is relocation, not sortedness.">A sorted map cannot ever allow two concurrent writers.</li>
+    <li data-correct="false" data-why="Generic parameters place no such constraint. <code>K</code> and <code>V</code> need only <code>Ord</code>; the signature is dictated by the node layout, not by the type parameters.">A generic parameter forces the stricter of both signatures.</li>
+    <li data-correct="false" data-why="Lookup borrows the root only shareably — that is why <code>get</code> takes <code>&amp;self</code>. Searching is never the problem; writing is.">A tree lookup already borrows the root node mutably.</li>
+  </ul>
+  <div class="quiz-why"></div>
+</div>
+
+<div class="quiz">
+  <p class="quiz-q">Because <code>SkipMap::insert</code> takes <code>&amp;self</code>, what does your
+  <code>MemTable</code> <em>not</em> need?</p>
+  <ul class="quiz-opts">
+    <li data-correct="true"  data-why="Right — and this is today's practical payoff. The skiplist already serialises concurrent writers internally with CAS, so wrapping it in your own <code>Mutex</code> would only re-impose the bottleneck you were handed for free.">Its own mutex guarding the inner map</li>
+    <li data-correct="false" data-why="It very much needs this: every skiplist node is its own heap allocation, and Mini-LSM stores <code>Bytes</code> keys and values inside them.">Any heap allocation for the stored keys</li>
+    <li data-correct="false" data-why="Ordering is essential — the memtable must support ordered <code>scan</code>, and flushing to an SSTable requires keys in sorted order. That is why a skiplist and not a hash map.">A stable ordering over the stored keys</li>
+    <li data-correct="false" data-why="It needs this too. Look at the struct: <code>approximate_size: Arc&lt;AtomicUsize&gt;</code>, which is how the engine decides when to freeze the memtable. Note it is atomic for the same reason — updated through <code>&amp;self</code>.">One atomic counter tracking approximate size</li>
+  </ul>
+  <div class="quiz-why"></div>
+</div>
+
+<div class="recall" data-min="140">
+  <p class="recall-q">Now produce it, don't recognise it.</p>
+  <p class="recall-hint">In your own words: name the layout fact for each map, and the signature it
+  forces. Two sentences is enough — but write them before revealing.</p>
+  <textarea placeholder="BTreeMap stores… so insert must… / SkipMap stores… so insert can…"
+            spellcheck="false"></textarea>
+  <div class="recall-bar">
+    <button type="button">Reveal model answer</button>
+    <span class="recall-gate"></span>
+  </div>
+  <div class="recall-model">
+    <span class="label">Model answer</span>
+    <p><code>BTreeMap</code> stores up to 11 keys and values in <em>inline arrays inside each
+    node</em>, so an insert into a full node splits it and physically copies elements into a new
+    allocation; any outstanding reference would dangle, so <code>insert</code> must take
+    <code>&amp;mut self</code> to prove no such reference exists.</p>
+    <p><code>SkipMap</code> stores each entry in its <em>own allocation</em>, linked by a tower of
+    atomic pointers, so an insert allocates a node and publishes it with a single
+    <code>compare_exchange</code> while nothing else moves; that mutation goes through
+    <code>UnsafeCell</code>-backed atomics, so <code>insert</code> can take <code>&amp;self</code>.</p>
+    <p>Credit yourself if you said <em>relocation</em> (or "elements move") for the first and
+    <em>atomic pointer swap</em> (or "nothing moves") for the second. Those are the load-bearing
+    facts; the constants are lookup-able.</p>
+  </div>
+</div>
+
+<h2><span class="num">07</span>One loose thread, deliberately left</h2>
+
+<p>You may have noticed that <code>SkipMap::get</code> does not return <code>Option&lt;&amp;V&gt;</code>
+the way <code>BTreeMap::get</code> does. It returns <code>Option&lt;Entry&lt;'_, K, V&gt;&gt;</code>.
+Ask yourself why before the next lesson: <em>if another thread can remove a node at any instant,
+what stops the node you are reading from being freed under you?</em> The answer is hiding in that
+<code>refs_and_height</code> field you saw in <code>Node</code>, and it is the subject of
+lesson 02.</p>
+
+<footer class="colophon">
+  <h2>Read this next (primary source)</h2>
+  <p><a href="https://skyzh.github.io/mini-lsm/week1-01-memtable.html"><strong>Mini-LSM Book —
+  Week 1 Day 1: Memtable</strong></a>. Read it now that the signature makes sense; the four tasks
+  will land differently. Then implement <code>MemTable::get</code> and <code>MemTable::put</code>
+  — they are about five lines each, which is the point.</p>
+  <p>For the Rust half, the highest-trust source is
+  <a href="https://marabos.nl/atomics/">Mara Bos, <em>Rust Atomics and Locks</em></a> (free
+  online). Chapter 1 covers exactly the shared-versus-exclusive distinction above.</p>
+
+  <h2>Reference</h2>
+  <p><a href="../reference/skiplist-vs-btreemap.html">Skiplist vs. BTreeMap — reference card</a>
+  · <a href="../RESOURCES.md">RESOURCES.md</a> · <a href="../MISSION.md">MISSION.md</a></p>
+
+  <h2>Test it on people</h2>
+  <p>Once you have your implementation, the
+  <a href="https://skyzh.dev/join/discord">Mini-LSM Discord</a> is where the author and other
+  course-takers compare designs. Post your <code>put</code>/<code>get</code> and ask what you got
+  wrong — that is the fastest available correction loop.</p>
+
+  <h2>Ask me</h2>
+  <p class="nextup">I am your teacher for this, not just the author of this page. If any step
+  above was hand-wavy — why <code>SeqCst</code> and not <code>Release</code>, what
+  <code>epoch::pin()</code> is doing, why <code>Tower</code> must be the last field, or anything
+  about the diagrams — <strong>ask me directly in the session</strong>. Questions you form right
+  after a lesson are the most valuable ones you will have.</p>
+</footer>
+
+</main>
+<script src="../assets/lesson.js"></script>
+</body>
+</html>

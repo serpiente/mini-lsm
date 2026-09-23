@@ -1,0 +1,399 @@
+/* ============================================================================
+   lesson.css — shared stylesheet for the Mini-LSM teaching workspace.
+   Every lesson and reference document links this file. Tufte-inflected:
+   generous measure, serif body, sidenotes, restrained rules. Prints well.
+   ========================================================================== */
+
+:root {
+  --ink:          #1a1a18;
+  --ink-soft:     #4a4a46;
+  --ink-faint:    #77746c;
+  --paper:        #fffef9;
+  --paper-sunk:   #f6f4ec;
+  --rule:         #ddd9cc;
+  --accent:       #8c2b1c;   /* oxblood: headings, links */
+  --accent-soft:  #f2e6e2;
+  --good:         #2f6b40;
+  --good-soft:    #e6f0e6;
+  --bad:          #9a2b20;
+  --bad-soft:     #f7e7e4;
+  --code-bg:      #f4f2ea;
+  --measure:      36rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ink:        #e8e4d9;
+    --ink-soft:   #b5b0a3;
+    --ink-faint:  #8b877c;
+    --paper:      #14140f;
+    --paper-sunk: #1d1d16;
+    --rule:       #35342a;
+    --accent:     #e0715c;
+    --accent-soft:#2d1d19;
+    --good:       #7fbf8e;
+    --good-soft:  #1a2a1d;
+    --bad:        #e08878;
+    --bad-soft:   #2d1a17;
+    --code-bg:    #1c1c15;
+  }
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua",
+               Georgia, "Times New Roman", serif;
+  font-size: 1.0625rem;
+  line-height: 1.62;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.page {
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: 3.5rem 1.5rem 6rem;
+}
+
+/* --- masthead ------------------------------------------------------------ */
+
+.masthead {
+  border-bottom: 1px solid var(--rule);
+  padding-bottom: 1.1rem;
+  margin-bottom: 2.5rem;
+}
+.eyebrow {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.7rem;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin: 0 0 0.65rem;
+}
+.masthead h1 {
+  font-size: 1.95rem;
+  line-height: 1.16;
+  font-weight: 600;
+  margin: 0 0 0.5rem;
+  letter-spacing: -0.012em;
+}
+.standfirst {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 1.06rem;
+  font-style: italic;
+}
+
+/* --- headings ------------------------------------------------------------ */
+
+h2 {
+  font-size: 1.02rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  margin: 3rem 0 0.9rem;
+  color: var(--accent);
+}
+h2 .num {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82rem;
+  color: var(--ink-faint);
+  margin-right: 0.55rem;
+  font-weight: 400;
+}
+h3 {
+  font-size: 0.96rem;
+  font-weight: 600;
+  margin: 1.9rem 0 0.5rem;
+}
+
+p { margin: 0 0 1.05rem; }
+p.tight { margin-bottom: 0.4rem; }
+
+a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-soft); }
+a:hover { border-bottom-color: var(--accent); }
+
+strong { font-weight: 600; }
+em.term { font-style: normal; font-weight: 600; color: var(--accent); }
+
+/* --- code --------------------------------------------------------------- */
+
+code, kbd, pre {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+code {
+  font-size: 0.855em;
+  background: var(--code-bg);
+  padding: 0.1em 0.32em;
+  border-radius: 3px;
+}
+pre {
+  background: var(--code-bg);
+  border-left: 2px solid var(--rule);
+  padding: 0.95rem 1.1rem;
+  overflow-x: auto;
+  font-size: 0.79rem;
+  line-height: 1.58;
+  margin: 0 0 1.15rem;
+}
+pre code { background: none; padding: 0; font-size: inherit; }
+pre .c  { color: var(--ink-faint); font-style: italic; }   /* comment */
+pre .k  { color: var(--accent); }                          /* keyword */
+pre .hl { background: var(--accent-soft); border-radius: 2px; padding: 0 2px; font-weight: 600; }
+
+/* --- callouts ----------------------------------------------------------- */
+
+.callout {
+  background: var(--paper-sunk);
+  border-left: 2px solid var(--accent);
+  padding: 0.9rem 1.1rem;
+  margin: 0 0 1.2rem;
+  font-size: 0.95rem;
+}
+.callout > :last-child { margin-bottom: 0; }
+.callout .label {
+  display: block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.66rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 0.4rem;
+}
+.callout.myth { border-left-color: var(--bad); background: var(--bad-soft); }
+.callout.key  { border-left-color: var(--good); background: var(--good-soft); }
+
+/* --- source citation ---------------------------------------------------- */
+
+.src {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.71rem;
+  color: var(--ink-faint);
+  display: block;
+  margin: -0.7rem 0 1.2rem;
+}
+.src a { border-bottom: none; color: var(--ink-faint); }
+.src a:hover { color: var(--accent); }
+
+/* --- two-column compare ------------------------------------------------- */
+
+.compare {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0;
+  border: 1px solid var(--rule);
+  margin: 0 0 1.3rem;
+}
+.compare > div { padding: 0.95rem 1rem; }
+.compare > div + div { border-left: 1px solid var(--rule); }
+.compare h4 {
+  margin: 0 0 0.6rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.76rem;
+  letter-spacing: 0.02em;
+  color: var(--accent);
+  font-weight: 600;
+}
+.compare p { font-size: 0.9rem; margin-bottom: 0.6rem; }
+.compare > div > :last-child { margin-bottom: 0; }
+@media (max-width: 620px) {
+  .compare { grid-template-columns: 1fr; }
+  .compare > div + div { border-left: none; border-top: 1px solid var(--rule); }
+}
+
+/* --- tables ------------------------------------------------------------- */
+
+.tbl-wrap { overflow-x: auto; margin: 0 0 1.3rem; }
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.87rem;
+}
+th, td {
+  text-align: left;
+  padding: 0.5rem 0.7rem 0.5rem 0;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: top;
+}
+th {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.7rem;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  font-weight: 500;
+  border-bottom: 1px solid var(--ink-faint);
+}
+td code { font-size: 0.8em; }
+
+/* --- figures ------------------------------------------------------------ */
+
+figure { margin: 1.6rem 0 1.7rem; }
+figure svg { display: block; width: 100%; height: auto; }
+figcaption {
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+  margin-top: 0.7rem;
+  line-height: 1.5;
+}
+figcaption b { color: var(--ink); font-weight: 600; }
+
+/* --- lists -------------------------------------------------------------- */
+
+ul, ol { margin: 0 0 1.15rem; padding-left: 1.3rem; }
+li { margin-bottom: 0.42rem; }
+ul.plain { list-style: none; padding-left: 0; }
+ul.plain li { padding-left: 1.25rem; position: relative; }
+ul.plain li::before {
+  content: "—";
+  position: absolute;
+  left: 0;
+  color: var(--ink-faint);
+}
+
+/* --- exercise blocks (see lesson.js) ------------------------------------ */
+
+.quiz {
+  border: 1px solid var(--rule);
+  border-top: 2px solid var(--accent);
+  padding: 1.1rem 1.2rem 1.2rem;
+  margin: 0 0 1.3rem;
+  background: var(--paper);
+}
+.quiz-q { font-weight: 600; margin: 0 0 0.9rem; font-size: 1rem; }
+.quiz-q code { font-weight: 400; }
+.quiz-opts { list-style: none; margin: 0; padding: 0; }
+.quiz-opts li {
+  margin: 0 0 0.45rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.92rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  line-height: 1.45;
+  transition: background 0.12s, border-color 0.12s;
+}
+.quiz-opts li:hover:not(.locked) { background: var(--paper-sunk); border-color: var(--ink-faint); }
+.quiz-opts li.locked { cursor: default; }
+.quiz-opts li.chosen-right { background: var(--good-soft); border-color: var(--good); }
+.quiz-opts li.chosen-wrong { background: var(--bad-soft);  border-color: var(--bad); }
+.quiz-opts li.reveal-right { border-color: var(--good); }
+.quiz-why {
+  display: none;
+  margin: 0.85rem 0 0;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--rule);
+  font-size: 0.9rem;
+  color: var(--ink-soft);
+}
+.quiz-why.shown { display: block; }
+.quiz-why p:last-child { margin-bottom: 0; }
+.quiz-why .verdict { font-weight: 600; font-family: ui-monospace, Menlo, monospace; font-size: 0.78rem;
+  letter-spacing: 0.08em; text-transform: uppercase; }
+.quiz-why .verdict.right { color: var(--good); }
+.quiz-why .verdict.wrong { color: var(--bad); }
+
+.recall {
+  border: 1px solid var(--rule);
+  border-top: 2px solid var(--ink-faint);
+  padding: 1.1rem 1.2rem 1.2rem;
+  margin: 0 0 1.3rem;
+  background: var(--paper);
+}
+.recall-q { font-weight: 600; margin: 0 0 0.35rem; font-size: 1rem; }
+.recall-hint { font-size: 0.82rem; color: var(--ink-faint); margin: 0 0 0.75rem; font-style: italic; }
+.recall textarea {
+  width: 100%;
+  min-height: 5.5rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  background: var(--paper-sunk);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 0.95rem;
+  line-height: 1.55;
+  resize: vertical;
+}
+.recall textarea:focus { outline: none; border-color: var(--accent); }
+.recall-bar { display: flex; align-items: center; gap: 0.8rem; margin-top: 0.7rem; }
+.recall button {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.74rem;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  padding: 0.5rem 0.9rem;
+  border: 1px solid var(--accent);
+  background: var(--paper);
+  color: var(--accent);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.recall button:hover:not(:disabled) { background: var(--accent-soft); }
+.recall button:disabled { opacity: 0.4; cursor: not-allowed; border-color: var(--rule); color: var(--ink-faint); }
+.recall-gate { font-size: 0.78rem; color: var(--ink-faint); font-family: ui-monospace, Menlo, monospace; }
+.recall-model {
+  display: none;
+  margin-top: 0.95rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--rule);
+  font-size: 0.92rem;
+  color: var(--ink-soft);
+}
+.recall-model.shown { display: block; }
+.recall-model > :last-child { margin-bottom: 0; }
+.recall-model .label {
+  display: block;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 0.66rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 0.4rem;
+}
+
+.scoreline {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+  color: var(--ink-faint);
+  text-align: right;
+  margin: -0.5rem 0 1.5rem;
+}
+
+/* --- footer ------------------------------------------------------------- */
+
+.colophon {
+  margin-top: 4rem;
+  padding-top: 1.3rem;
+  border-top: 1px solid var(--rule);
+  font-size: 0.88rem;
+  color: var(--ink-soft);
+}
+.colophon h2 { margin-top: 1.6rem; }
+.colophon h2:first-child { margin-top: 0; }
+.nextup { font-size: 0.88rem; color: var(--ink-soft); }
+
+/* --- print -------------------------------------------------------------- */
+
+@media print {
+  :root {
+    --ink: #000; --ink-soft: #333; --ink-faint: #666;
+    --paper: #fff; --paper-sunk: #f5f5f5; --rule: #bbb;
+    --accent: #000; --accent-soft: #eee;
+    --code-bg: #f2f2f2; --good: #000; --bad: #000;
+    --good-soft: #f2f2f2; --bad-soft: #f2f2f2;
+  }
+  body { font-size: 10.5pt; }
+  .page { max-width: none; padding: 0; }
+  a { border-bottom: none; }
+  a[href^="http"]::after { content: " (" attr(href) ")"; font-size: 0.72em; color: #666; word-break: break-all; }
+  .quiz, .recall, .callout, figure, .compare, table { break-inside: avoid; }
+  h2, h3 { break-after: avoid; }
+  .quiz-why, .recall-model { display: block; }
+  .recall textarea { min-height: 4rem; }
+  .recall button, .recall-gate, .scoreline { display: none; }
+}

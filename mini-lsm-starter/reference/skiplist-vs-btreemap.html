@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reference · SkipMap vs BTreeMap</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+<style>
+  /* Reference cards run denser than lessons and use a wider measure. */
+  :root { --measure: 42rem; }
+  .page { padding-top: 2.5rem; }
+  h2 { margin-top: 2.2rem; }
+  table { font-size: 0.82rem; }
+  th:first-child, td:first-child { padding-right: 1rem; }
+  .r-ax { width: 22%; font-weight: 600; }
+  td.yes { color: var(--good); }
+  td.no  { color: var(--bad); }
+</style>
+</head>
+<body>
+<main class="page">
+
+<header class="masthead">
+  <p class="eyebrow">Reference card · verified against source, 2026-09-09</p>
+  <h1><code>crossbeam_skiplist::SkipMap</code> vs <code>std::collections::BTreeMap</code></h1>
+  <p class="standfirst">Both are ordered key–value maps with O(log n) lookup. Everything else about
+  them differs, and all of it follows from one choice: <em>inline arrays</em> versus
+  <em>per-entry allocations linked by atomic pointers</em>.</p>
+</header>
+
+<h2>Signatures — the observable difference</h2>
+
+<div class="tbl-wrap">
+<table>
+  <thead><tr><th class="r-ax">Operation</th><th>BTreeMap</th><th>SkipMap</th></tr></thead>
+  <tbody>
+    <tr><td class="r-ax">insert</td>
+        <td><code>fn insert(&amp;mut self, K, V) -&gt; Option&lt;V&gt;</code></td>
+        <td><code>fn insert(&amp;self, K, V) -&gt; Entry&lt;'_, K, V&gt;</code></td></tr>
+    <tr><td class="r-ax">get</td>
+        <td><code>fn get(&amp;self, &amp;Q) -&gt; Option&lt;&amp;V&gt;</code></td>
+        <td><code>fn get(&amp;self, &amp;Q) -&gt; Option&lt;Entry&lt;'_, K, V&gt;&gt;</code></td></tr>
+    <tr><td class="r-ax">remove</td>
+        <td><code>fn remove(&amp;mut self, &amp;Q) -&gt; Option&lt;V&gt;</code></td>
+        <td><code>fn remove(&amp;self, &amp;Q) -&gt; Option&lt;Entry&lt;'_, K, V&gt;&gt;</code></td></tr>
+    <tr><td class="r-ax">range</td>
+        <td><code>fn range(&amp;self, R) -&gt; Range&lt;'_, K, V&gt;</code></td>
+        <td><code>fn range(&amp;self, R) -&gt; Range&lt;'_, Q, R, K, V&gt;</code></td></tr>
+    <tr><td class="r-ax">get_mut</td>
+        <td><code>fn get_mut(&amp;mut self, &amp;Q) -&gt; Option&lt;&amp;mut V&gt;</code></td>
+        <td class="no">does not exist — values are never mutated in place</td></tr>
+  </tbody>
+</table>
+</div>
+
+<p><strong>Two things to notice.</strong> Every <code>SkipMap</code> method takes
+<code>&amp;self</code>, including the mutating ones. And <code>SkipMap</code> never hands out a
+plain <code>&amp;V</code> — always an <code>Entry</code>, which is a guard: it holds a reference
+count on the node so a concurrent <code>remove</code> cannot free the memory you are reading.</p>
+
+<h2>Layout — the cause of everything above</h2>
+
+<div class="compare">
+  <div>
+    <h4>BTreeMap</h4>
+    <p><code>B = 6</code>, <code>CAPACITY = 2B−1 = 11</code>,
+    <code>MIN_LEN_AFTER_SPLIT = 5</code>.</p>
+    <p>Each node holds <code>keys: [MaybeUninit&lt;K&gt;; 11]</code> and
+    <code>vals: [MaybeUninit&lt;V&gt;; 11]</code> <strong>inline</strong>, plus <code>len: u16</code>
+    and a parent pointer. Internal nodes add <code>edges: [BoxedNode; 12]</code>.</p>
+    <p>Insert into a full node <strong>splits</strong> it: the median key is promoted to the parent
+    and about half the elements are copied into a fresh allocation. <b>Elements relocate.</b></p>
+    <p class="tight"><span class="src">library/alloc/src/collections/btree/node.rs, l. 43–80</span></p>
+  </div>
+  <div>
+    <h4>SkipMap</h4>
+    <p><code>HEIGHT_BITS = 5</code>, <code>MAX_HEIGHT = 32</code>.</p>
+    <p>One heap allocation per entry: <code>#[repr(C)] struct Node { value, key,
+    refs_and_height: AtomicUsize, tower }</code>, where <code>tower</code> is a dynamically sized
+    array of <code>Atomic&lt;Node&gt;</code> and <em>must be the last field</em>.</p>
+    <p>Insert allocates a node, stores its level-0 successor, then publishes it with one
+    <code>compare_exchange</code> on the predecessor. <b>Nothing relocates, ever.</b></p>
+    <p class="tight"><span class="src">crossbeam-skiplist-0.1.3/src/base.rs, l. 16–140</span></p>
+  </div>
+</div>
+
+<h2>How a skiplist decides its shape</h2>
+
+<pre><code><span class="c">// base.rs :: random_height() — line 558</span>
+<span class="c">// Xorshift PRNG (Marsaglia), then:</span>
+<span class="k">let mut</span> height = cmp::min(MAX_HEIGHT, num.trailing_zeros() <span class="k">as</span> usize + 1);
+
+<span class="c">// Then trim: don't build a tower far taller than anything already present.</span>
+<span class="k">while</span> height &gt;= 4 &amp;&amp; self.head[height - 2].load(Relaxed, unprotected()).is_null() {
+    height -= 1;
+}</code></pre>
+
+<p><code>trailing_zeros() + 1</code> makes each additional level half as likely as the last —
+so <strong>p = ½</strong>, expected tower height 2, and P(height ≥ k) = 2<sup>−(k−1)</sup>. Tall
+nodes are rare express lanes. <code>search_bound</code> starts at the highest occupied level and
+descends, skipping most of the list at each step.</p>
+
+<p><strong>This is the trade.</strong> A B-tree earns its balance by <em>doing work on write</em>
+(splitting, merging, rebalancing). A skiplist buys expected balance with <em>randomness</em> and
+does no rebalancing at all — which is exactly what makes a single-CAS insert possible.</p>
+
+<h2>Properties side by side</h2>
+
+<div class="tbl-wrap">
+<table>
+  <thead><tr><th class="r-ax">Axis</th><th>BTreeMap</th><th>SkipMap</th></tr></thead>
+  <tbody>
+    <tr><td class="r-ax">get / insert / remove</td><td>O(log n) <b>worst case</b></td><td>O(log n) <b>expected</b>; O(n) pathological</td></tr>
+    <tr><td class="r-ax">Ordered iteration</td><td class="yes">yes</td><td class="yes">yes</td></tr>
+    <tr><td class="r-ax">Cache behaviour</td><td class="yes">excellent — 11 keys per cache-resident node, ~log₁₁ n node visits</td><td class="no">poor — pointer chase, ~log₂ n hops, each a likely cache miss</td></tr>
+    <tr><td class="r-ax">Memory overhead</td><td class="yes">low — amortised across 11-slot arrays</td><td class="no">high — separate allocation per entry, ~2 atomic pointers plus a refcount word each</td></tr>
+    <tr><td class="r-ax">Concurrent readers</td><td>only via an external <code>RwLock</code></td><td class="yes">lock-free, unsynchronised</td></tr>
+    <tr><td class="r-ax">Concurrent writers</td><td class="no">impossible without an exclusive lock</td><td class="yes">lock-free, CAS-serialised per link</td></tr>
+    <tr><td class="r-ax">Single-thread speed</td><td class="yes">faster, usually by a wide margin</td><td class="no">slower — atomics and indirection are not free</td></tr>
+    <tr><td class="r-ax">Reclamation</td><td>immediate on drop</td><td>deferred — <code>crossbeam-epoch</code></td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="callout">
+  <span class="label">Decision rule</span>
+  <p>If one thread owns the map, or a single <code>RwLock</code> around it is not a measured
+  bottleneck: <strong>use <code>BTreeMap</code></strong>. It is faster and smaller, and you keep
+  worst-case guarantees.</p>
+  <p>Reach for <code>SkipMap</code> only when you need <strong>many threads reading and writing the
+  same ordered map at once</strong> and the lock has been shown to hurt. You are paying cache
+  locality and memory to delete a lock.</p>
+</div>
+
+<h2>Two behaviours that will bite you</h2>
+
+<h3>1. Overwrite is not mutation — it is replace</h3>
+<p><code>SkipMap::insert</code> on an existing key does <em>not</em> update the value in place. It
+marks the old node dead and links a brand-new node:</p>
+<pre><code><span class="c">// base.rs, l. 1095 — note the always-true replace predicate</span>
+pub fn insert(&amp;self, key: K, value: V, guard: &amp;Guard) -&gt; RefEntry&lt;'_, K, V&gt; {
+    self.insert_internal(key, || value, <span class="hl">|_| true</span>, guard)
+}</code></pre>
+<p>Consequence: an <code>Entry</code> you obtained earlier keeps showing you the <em>old</em>
+value, and stays valid while doing so. That is a feature — it is a stable read snapshot of one key
+— but it surprises people who expect map semantics.</p>
+
+<h3>2. Removal is a two-phase, cooperative affair</h3>
+<p><code>mark_tower()</code> sets the low tag bit on each of the node's pointers, from the top level
+down. A node is officially removed the instant its <em>level-0</em> pointer is marked. Unlinking is
+then done opportunistically by whichever thread trips over it next:</p>
+<pre><code><span class="c">// base.rs :: search_bound — every reader helps clean up</span>
+<span class="k">if</span> succ.tag() == 1 {
+    <span class="k">if let</span> Some(c) = self.help_unlink(&amp;pred[level], c, succ, guard) { … }
+}</code></pre>
+<p>This is why readers must run inside an epoch guard (<code>epoch::pin()</code>): the memory is
+freed only once no thread can still be looking at it.</p>
+
+<h2>Where this lands in Mini-LSM</h2>
+
+<div class="tbl-wrap">
+<table>
+  <thead><tr><th class="r-ax">Fact</th><th>Consequence in the engine</th></tr></thead>
+  <tbody>
+    <tr><td class="r-ax"><code>insert</code> takes <code>&amp;self</code></td>
+        <td><code>MemTable::put(&amp;self, …)</code> needs <b>no mutex</b>. Writers take only a read lock on engine state.</td></tr>
+    <tr><td class="r-ax">Ordered iteration</td>
+        <td>Flushing a memtable to an SSTable can stream keys in sorted order with no sort step.</td></tr>
+    <tr><td class="r-ax"><code>range</code> borrows the map</td>
+        <td><code>MemTableIterator</code> must be self-referential — hence <code>ouroboros</code>. This is Week 1 Day 2's whole difficulty.</td></tr>
+    <tr><td class="r-ax">Cache locality is poor</td>
+        <td>Acceptable: the memtable is small and short-lived. Bulk ordered data lives in SSTable blocks, which <em>are</em> cache-friendly arrays.</td></tr>
+    <tr><td class="r-ax">Replace, not update</td>
+        <td>Overwriting a key leaves garbage for epoch reclamation — fine, since the whole memtable is dropped after flush.</td></tr>
+  </tbody>
+</table>
+</div>
+
+<footer class="colophon">
+  <h2>Reading the source yourself</h2>
+  <pre><code><span class="c"># the skiplist</span>
+ls ~/.cargo/registry/src/*/crossbeam-skiplist-0.1.3/src/
+
+<span class="c"># the B-tree</span>
+ls $(rustc --print sysroot)/lib/rustlib/src/rust/library/alloc/src/collections/btree/</code></pre>
+  <p><a href="../lessons/0001-shared-not-immutable.html">← Lesson 01: &amp;self is shared, not
+  immutable</a> · <a href="../RESOURCES.md">RESOURCES.md</a></p>
+  <p class="nextup">Something here compressed too far to be useful? Ask me to expand it — that is
+  what I am for.</p>
+</footer>
+
+</main>
+</body>
+</html>
